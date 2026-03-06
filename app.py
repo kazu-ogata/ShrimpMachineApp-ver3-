@@ -6,7 +6,7 @@ from database import init_db, create_qr_session, poll_for_login, verify_user_cre
 from ui_main import MainMenu
 
 # --- Environment setup for Wayland/RPi5 ---
-os.environ.setdefault("QT_QPA_PLATFORM", "wayland")
+#os.environ.setdefault("QT_QPA_PLATFORM", "wayland")
 
 class Login(QtWidgets.QDialog):
     def __init__(self):
@@ -43,8 +43,10 @@ class Login(QtWidgets.QDialog):
     def setup_qr_view(self):
         qr_widget = QtWidgets.QWidget()
         self.main_layout = QtWidgets.QVBoxLayout(qr_widget) 
-        self.main_layout.setContentsMargins(100, 40, 100, 80) # Adjusted top margin for button
-        self.main_layout.setSpacing(20)
+        self.main_layout.setContentsMargins(60, 60, 60, 40) 
+        self.main_layout.setSpacing(10)
+
+        self.main_layout.addStretch(1)
 
         # --- TOP BAR: Back Button (Exit) ---
         self.btn_back = QtWidgets.QPushButton(qr_widget)
@@ -73,15 +75,15 @@ class Login(QtWidgets.QDialog):
         card = QtWidgets.QFrame()
         card.setStyleSheet("QFrame { background-color: white; border: 1px solid #D1D1D1; border-radius: 20px; }")
         card_layout = QtWidgets.QHBoxLayout(card)
-        card_layout.setContentsMargins(40, 40, 40, 40)
-        card_layout.setSpacing(40)
+        card_layout.setContentsMargins(30, 20, 30, 20)
+        card_layout.setSpacing(20)
 
         text_container = QtWidgets.QVBoxLayout()
         title = QtWidgets.QLabel("Steps to log in")
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #111; border: none;")
         steps = QtWidgets.QLabel(
             "1. Open <b>ShrimpSense</b> app on your phone.<br><br>"
-            "2. Go to <b>Scan → Start Scanner.</b><br><br>"
+            "2. Go to <b>Scan ? Start Scanner.</b><br><br>"
             "3. Scan the QR code displayed on this screen."
         )
         steps.setStyleSheet("font-size: 16px; color: #333; border: none;")
@@ -89,15 +91,17 @@ class Login(QtWidgets.QDialog):
         text_container.addWidget(steps)
         text_container.addStretch()
 
+        steps.setWordWrap(True)
+
         self.qr_label = QtWidgets.QLabel()
         self.qr_label.setStyleSheet("border: none;")
         if self.session_id:
-            qr = qrcode.QRCode(version=1, box_size=6, border=2)
+            qr = qrcode.QRCode(version=1, box_size=5, border=2)
             qr.add_data(self.session_id)
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white")
             img.save("session_qr.png")
-            self.qr_label.setPixmap(QtGui.QPixmap("session_qr.png").scaled(240, 240))
+            self.qr_label.setPixmap(QtGui.QPixmap("session_qr.png").scaled(200, 200, QtCore.Qt.KeepAspectRatio))
         
         card_layout.addLayout(text_container, stretch=2)
         card_layout.addWidget(self.qr_label, stretch=1)

@@ -11,6 +11,8 @@ MONGO_DB_NAME = "test"
 def init_db():
     """Initialize local SQLite database tables."""
     conn = sqlite3.connect(DB_PATH)
+    
+    # 1. Create Users table
     conn.execute("""
     CREATE TABLE IF NOT EXISTS users(
         id TEXT PRIMARY KEY,
@@ -19,6 +21,8 @@ def init_db():
         password TEXT
     )
     """)
+    
+    # 2. Create Biomass Records table
     conn.execute("""
     CREATE TABLE IF NOT EXISTS biomass_records(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,17 +32,26 @@ def init_db():
         biomass REAL,
         feedMeasurement REAL,
         dateTime TEXT,
-        synced INTEGER DEFAULT 0
+        synced INTEGER DEFAULT 0,
+        dispensed_slots TEXT DEFAULT ''
     )
     """)
+
+    # 3. Create Session table
     conn.execute("""
     CREATE TABLE IF NOT EXISTS session (
-        id INTEGER PRIMARY KEY CHECK (id = 1), -- Ensure only one active session
+        id INTEGER PRIMARY KEY CHECK (id = 1), 
         userId TEXT,
         expiry TEXT
     )
     """)
 
+    # 4. Patch for existing DBs (if the column wasn't there before)
+    try:
+        conn.execute("ALTER TABLE biomass_records ADD COLUMN dispensed_slots TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass # Column already exists
+    
     conn.commit()
     conn.close()
 
@@ -125,10 +138,11 @@ def cache_user(uid, username, email, hashed_pw):
     conn.commit()
     conn.close()
 
-# Biomass Record Handling (REQUIRED BY UI)
+# Biomass Record Handling
 def save_biomass_record(owner_id, shrimp_count, biomass, feed_measurement):
     conn = sqlite3.connect(DB_PATH)
     record_id = str(uuid.uuid4())
+    # Standardize to UTC ISO format string for local storage
     date_time = datetime.datetime.now().isoformat()
     conn.execute("""
     INSERT INTO biomass_records(ownerId, recordId, shrimpCount, biomass, feedMeasurement, dateTime, synced)
@@ -188,7 +202,7 @@ def sync_biomass_records(owner_id):
     """Sync only the current user's unsynced records to MongoDB Atlas."""
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute("""
-        SELECT ownerId, recordId, shrimpCount, biomass, feedMeasurement, dateTime
+        SELECT id, ownerId, recordId, shrimpCount, biomass, feedMeasurement, dateTime
         FROM biomass_records
         WHERE synced=0 AND ownerId=?
     """, (owner_id,)).fetchall()
@@ -200,60 +214,79 @@ def sync_biomass_records(owner_id):
     try:
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=20000)
         db = client[MONGO_DB_NAME]          
-        col = db["biomassrecords"]           
+        col = db["biomassrecords"]            
 
         docs = []
-        for (o_id, r_id, count, bio, feed, dt) in rows:
-            dt_obj = datetime.datetime.fromisoformat(dt).astimezone(datetime.timezone.utc)
+        local_ids = []
+        for (l_id, o_id, r_id, count, bio, feed, dt) in rows:
+            # 1. Convert ISO string back to UTC datetime object for MongoDB
+            dt_obj = datetime.datetime.fromisoformat(dt).replace(tzinfo=datetime.timezone.utc)
+            
+            # 2. Robust ownerId formatting
+            try:
+                formatted_owner_id = ObjectId(str(o_id))
+            except:
+                formatted_owner_id = str(o_id)
+
             docs.append({
-                "ownerId": ObjectId(str(o_id)) if len(str(o_id)) == 24 else str(o_id),
+                "ownerId": formatted_owner_id,
                 "recordId": r_id,
                 "shrimpCount": count,
                 "biomass": bio,
                 "feedMeasurement": feed,
-                "dateTime": datetime.datetime.fromisoformat(dt)
+                "dateTime": dt_obj,
+                "dispensed_slots": "" # Ensure column exists in MongoDB
             })
+            local_ids.append(l_id)
 
         if docs:
             col.insert_many(docs)
-            conn.execute("UPDATE biomass_records SET synced=1 WHERE ownerId=?", (owner_id,))
+            # Update sync status for the specific rows pushed
+            for l_id in local_ids:
+                conn.execute("UPDATE biomass_records SET synced=1 WHERE id=?", (l_id,))
             conn.commit()
-        n = len(docs)
-    except Exception:
+            n = len(docs)
+        else:
+            n = 0
+    except Exception as e:
+        print(f"Cloud Sync Error: {e}")
         n = 0
 
     conn.close()
     return n
 
+def update_dispense_status(sqlite_id, slots_string):
+    """Saves which slots (6am, 10am, etc) have been clicked to the local DB."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("UPDATE biomass_records SET dispensed_slots = ? WHERE id = ?", (slots_string, sqlite_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error updating dispense status: {e}")
+
 def verify_user_credentials(identifier, password):
     """Primary check against MongoDB Atlas, falls back to Local for offline support."""
-    import bcrypt
-    
-    # 1. TRY MONGODB ATLAS FIRST (Main Database)
     try:
-        # Use existing MONGO_URI and MONGO_DB_NAME
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         db = client[MONGO_DB_NAME]
         
-        # Look for user by email or username in your main cloud database
         user_data = db["users"].find_one({
             "$or": [{"email": identifier}, {"username": identifier}]
         })
 
         if user_data:
             hashed_pw = user_data['password']
-            # Convert to bytes if stored as string
             pw_bytes = hashed_pw if isinstance(hashed_pw, bytes) else hashed_pw.encode('utf-8')
             
             if bcrypt.checkpw(password.encode('utf-8'), pw_bytes):
                 uid = str(user_data['_id'])
-                # Update local cache so they can log in even if internet is down later
                 cache_user(uid, user_data['username'], user_data['email'], hashed_pw)
                 return uid
     except Exception as e:
-        print(f"MongoDB Login Error (checking local instead): {e}")
+        print(f"MongoDB Login Error: {e}")
 
-    # 2. OFFLINE FALLBACK: Check Local SQLite
+    # Offline fallback
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
         "SELECT id, password FROM users WHERE username=? OR email=?", 
@@ -267,7 +300,7 @@ def verify_user_credentials(identifier, password):
             pw_bytes = hashed_pw if isinstance(hashed_pw, bytes) else hashed_pw.encode('utf-8')
             if bcrypt.checkpw(password.encode('utf-8'), pw_bytes):
                 return user_id
-        except Exception as e:
-            print(f"Local login fallback error: {e}")
+        except Exception:
+            pass
 
     return None

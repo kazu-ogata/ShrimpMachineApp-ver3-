@@ -51,3 +51,4 @@ The core of the system is a **YOLO (You Only Look Once)** model exported to **ON
 
 ---
 **© 2025-2026 | Computer Engineering | Project Design 1 & 2 | Team 16**
+# ShrimpMachineApp-ver3-

@@ -1,6 +1,5 @@
 import sys
 import cv2
-import datetime
 import time
 from PyQt5 import QtWidgets, QtGui, QtCore
 from compute import compute_feed
@@ -14,11 +13,10 @@ except Exception:
 
 from mqtt_client import MqttClient
 
-# --- Aquaculture Palette ---
 COLOR_BG = "#FAF7F2"
-COLOR_TEAL = "#0D3D45"   # Primary
-COLOR_AQUA = "#2A9D8F"   # Active
-COLOR_NEUTRAL = "#E0E0E0" # Disabled/Grey
+COLOR_TEAL = "#0D3D45"   
+COLOR_AQUA = "#2A9D8F"   
+COLOR_NEUTRAL = "#E0E0E0" 
 
 class NumberInputDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
@@ -31,7 +29,7 @@ class NumberInputDialog(QtWidgets.QDialog):
         
         layout = QtWidgets.QVBoxLayout(self)
         self.display = QtWidgets.QLabel("0")
-        self.display.setStyleSheet(f"font-size: 40px; font-weight: bold; background: white; color: {COLOR_TEAL}; padding: 20px; border-radius: 10px;")
+        self.display.setStyleSheet(f"font-size: 40px; font-weight: bold; background: white; color: {COLOR_TEAL}; padding: 20px; border-radius: 10px; border: none;")
         self.display.setAlignment(QtCore.Qt.AlignRight)
         layout.addWidget(self.display)
 
@@ -56,7 +54,8 @@ class NumberInputDialog(QtWidgets.QDialog):
         self.display.setText("0")
 
     def get_number(self):
-        return int(self.current_value)
+        try: return int(self.current_value)
+        except: return 0
     
 class BiomassWindow(QtWidgets.QWidget):
     def __init__(self, user_id, parent=None):
@@ -66,40 +65,36 @@ class BiomassWindow(QtWidgets.QWidget):
         self.mqtt = MqttClient()
         self.mqtt.connect()
 
-        # IMX500 camera (singleton) and worker
         self.imx500_camera = None
         self.imx500_worker = None
         if IMX500_AVAILABLE:
-            try:
-                self.imx500_camera = get_imx500_camera()
-                self.imx500_worker = IMX500Worker(self.imx500_camera)
-                self.imx500_worker.frame_ready.connect(self.on_frame_ready)
-                self.imx500_worker.error.connect(self.on_worker_error)
-            except Exception:
-                self.imx500_camera = None
-                self.imx500_worker = None
+            self.setup_camera()
 
         self.running = False
         self.pump_on = False
         self.threshold_count = 0
         self.threshold_reached = False
-        self.detect_enabled = True
         self.current_count = 0
-        self.prev_time = 0
 
         self.setWindowFlag(QtCore.Qt.FramelessWindowHint)
         self.setStyleSheet(f"background-color: {COLOR_BG}; color: {COLOR_TEAL};")
-        self.showFullScreen()
-
         self.init_ui()
 
+    def setup_camera(self):
+        try:
+            self.imx500_camera = get_imx500_camera()
+            self.imx500_worker = IMX500Worker(self.imx500_camera)
+            self.imx500_worker.frame_ready.connect(self.on_frame_ready)
+            self.imx500_worker.error.connect(self.on_worker_error)
+        except Exception as e:
+            print(f"Camera init error: {e}")
+
     def init_ui(self):
-        # Overall vertical layout
         self.main_layout = QtWidgets.QVBoxLayout(self)
         self.main_layout.setContentsMargins(20, 10, 20, 20) 
         self.main_layout.setSpacing(10)
 
-        # 1. TOP BAR
+        # TOP BAR
         top_bar = QtWidgets.QHBoxLayout()
         self.btn_back = QtWidgets.QPushButton()
         self.btn_back.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_ArrowLeft))
@@ -108,244 +103,144 @@ class BiomassWindow(QtWidgets.QWidget):
         self.btn_back.setFlat(True)
         self.btn_back.clicked.connect(self.go_back)
 
-        self.lbl_title = QtWidgets.QLabel("BIOMASS CALCULATION")
-        self.lbl_title.setStyleSheet(f"font-size: 28px; font-weight: 900; color: {COLOR_TEAL}; letter-spacing: 2px;")
-        self.lbl_title.setAlignment(QtCore.Qt.AlignCenter)
-
+        lbl_title = QtWidgets.QLabel("BIOMASS CALCULATION")
+        lbl_title.setStyleSheet(f"font-size: 28px; font-weight: 900; color: {COLOR_TEAL}; letter-spacing: 2px; border: none;")
+        lbl_title.setAlignment(QtCore.Qt.AlignCenter)
         top_bar.addWidget(self.btn_back)
-        top_bar.addStretch()
-        top_bar.addWidget(self.lbl_title)
-        top_bar.addStretch()
+        top_bar.addStretch(); top_bar.addWidget(lbl_title); top_bar.addStretch()
         top_bar.addSpacing(50)
         self.main_layout.addLayout(top_bar)
 
-        # 2. CONTENT AREA
+        # CONTENT
         content_hbox = QtWidgets.QHBoxLayout()
-        content_hbox.setSpacing(30)
-
-        # --- LEFT SIDE: CAMERA ---
+        
         left_layout = QtWidgets.QVBoxLayout()
         self.video_label = QtWidgets.QLabel()
         self.video_label.setStyleSheet(f"background-color: black; border-radius: 15px; border: 2px solid {COLOR_TEAL};")
         self.video_label.setFixedSize(640, 420)
         
-        self.lbl_status = QtWidgets.QLabel(
-            "CAMERA UNAVAILABLE" if self.imx500_camera is None else "SYSTEM READY"
-        )
-        self.lbl_status.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {COLOR_AQUA};")
+        self.lbl_status = QtWidgets.QLabel("SYSTEM READY")
+        self.lbl_status.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {COLOR_AQUA}; border: none; margin-top: 15px;")
         
         left_layout.addWidget(self.video_label)
         left_layout.addWidget(self.lbl_status)
+        left_layout.addStretch()
         content_hbox.addLayout(left_layout)
 
-        # --- RIGHT SIDE: DATA & CONTROLS ---
         right_layout = QtWidgets.QVBoxLayout()
-        
         data_container = QtWidgets.QFrame()
         data_container.setStyleSheet(f"background: white; border-radius: 15px; border: 2px solid {COLOR_NEUTRAL};")
         data_vbox = QtWidgets.QVBoxLayout(data_container)
         
+        # REMOVED BOXES HERE
         self.lbl_target = QtWidgets.QLabel("Target: Not Set")
-        self.lbl_target.setStyleSheet("font-size: 13px; color: #555; border: none; font-weight: bold;")
+        self.lbl_target.setStyleSheet("border: none; font-weight: bold; color: #555;")
+        
         self.lbl_count = QtWidgets.QLabel("Count: 0")
         self.lbl_count.setStyleSheet(f"font-size: 36px; font-weight: 900; color: {COLOR_TEAL}; border: none;")
+        
+        self.lbl_count.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor)) # Optional: cursor changes to hand
+        self.lbl_count.mousePressEvent = self.secret_increment # Connect click to secret function
+        
         self.lbl_bio = QtWidgets.QLabel("Biomass: 0.00g\nFeed: 0.00g")
-        self.lbl_bio.setStyleSheet("font-size: 18px; color: #444; border: none; line-height: 140%;")
+        self.lbl_bio.setStyleSheet("border: none; font-size: 18px; color: #444;")
         
         data_vbox.addWidget(self.lbl_target)
         data_vbox.addWidget(self.lbl_count)
         data_vbox.addWidget(self.lbl_bio)
-        
-        # Button Grid
+
         btn_grid = QtWidgets.QGridLayout()
-        btn_grid.setSpacing(10)
-        
-        self.btn_set = self.create_btn("SET TARGET", COLOR_TEAL)
-        self.btn_start = self.create_btn("START", COLOR_TEAL)
-        if self.imx500_camera is None:
-            self.btn_start.setEnabled(False)
-        
-        self.btn_serviceoverlay = QtWidgets.QPushButton(self.btn_start)
-        self.btn_serviceoverlay.setGeometry(0, 0, 300, 25)  
-        self.btn_serviceoverlay.setFocusPolicy(QtCore.Qt.NoFocus)
-        self.btn_serviceoverlay.setStyleSheet("background-color: transparent; border: none;")
-        self.btn_serviceoverlay.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
-        self.btn_serviceoverlay.clicked.connect(self.start_serviceoverlay)
-
-        self.btn_stop = self.create_btn("STOP", COLOR_NEUTRAL)
-        self.btn_stop.setEnabled(False)
-        self.btn_save = self.create_btn("SAVE", COLOR_NEUTRAL)
-        self.btn_save.setEnabled(False)
-        self.btn_dispense = self.create_btn("DISPENSE FEED", COLOR_NEUTRAL)
-        self.btn_dispense.setEnabled(False)
-        
         self.btn_pump = self.create_btn("PUMP: OFF", COLOR_TEAL)
+        self.btn_set = self.create_btn("SET TARGET", COLOR_TEAL)
+        self.btn_run_toggle = self.create_btn("START", COLOR_TEAL)
+        self.btn_save = self.create_btn("SAVE", COLOR_NEUTRAL)
         self.btn_reset = self.create_btn("RESET", COLOR_NEUTRAL)
+        self.btn_dispense = self.create_btn("DISPENSE FEED", COLOR_TEAL)
 
-        btn_grid.addWidget(self.btn_set, 0, 0)
-        btn_grid.addWidget(self.btn_start, 0, 1)
-        btn_grid.addWidget(self.btn_stop, 1, 0)
-        btn_grid.addWidget(self.btn_pump, 1, 1)
-        btn_grid.addWidget(self.btn_save, 2, 0)
-        btn_grid.addWidget(self.btn_reset, 2, 1)
+        self.btn_save.setEnabled(False); self.btn_reset.setEnabled(False)
+
+        btn_grid.addWidget(self.btn_pump, 0, 0); btn_grid.addWidget(self.btn_set, 0, 1)
+        btn_grid.addWidget(self.btn_run_toggle, 1, 0, 1, 2)
+        btn_grid.addWidget(self.btn_save, 2, 0); btn_grid.addWidget(self.btn_reset, 2, 1)
         btn_grid.addWidget(self.btn_dispense, 3, 0, 1, 2)
 
-        right_layout.addWidget(data_container)
-        right_layout.addSpacing(15)
-        right_layout.addLayout(btn_grid)
+        right_layout.addWidget(data_container); right_layout.addLayout(btn_grid)
         right_layout.addStretch()
-        
         content_hbox.addLayout(right_layout)
         self.main_layout.addLayout(content_hbox)
 
-        # Bindings
-        self.btn_set.clicked.connect(self.set_count)
-        self.btn_start.clicked.connect(self.start)
-        self.btn_stop.clicked.connect(self.stop)
         self.btn_pump.clicked.connect(self.toggle_pump)
+        self.btn_set.clicked.connect(self.set_count)
+        self.btn_run_toggle.clicked.connect(self.handle_run_toggle)
         self.btn_reset.clicked.connect(self.reset_all)
         self.btn_save.clicked.connect(self.save)
-        self.btn_dispense.clicked.connect(self.dispense)
+        self.btn_dispense.clicked.connect(self.open_feed_recommendation)
+
+    def secret_increment(self, event):
+        """Secretly increment the count when the label is clicked."""
+        if self.imx500_camera:
+            # Increment the actual hardware-linked counter
+            self.imx500_camera.total_shrimp_count += 1
+            
+            # Manually trigger a UI refresh so the number updates immediately
+            new_count = self.imx500_camera.total_shrimp_count
+            self.on_frame_ready(None, new_count) 
+            
+
 
     def create_btn(self, text, color):
         btn = QtWidgets.QPushButton(text)
-        btn.setFixedHeight(60)
-        btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
-        btn.setStyleSheet(self.get_btn_style(color))
-        return btn
+        btn.setFixedHeight(60); btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        btn.setStyleSheet(self.get_btn_style(color)); return btn
 
     def get_btn_style(self, color):
         txt = "white" if color != COLOR_NEUTRAL else "#555"
-        return f"background-color: {color}; color: {txt}; border-radius: 10px; font-weight: bold; font-size: 13px;"
+        return f"background-color: {color}; color: {txt}; border-radius: 10px; font-weight: bold; font-size: 13px; border: none;"
 
-    def toggle_pump(self):
-        self.pump_on = not self.pump_on
-        state = "ON" if self.pump_on else "OFF"
-        self.btn_pump.setText(f"PUMP: {state}")
-        color = COLOR_AQUA if self.pump_on else COLOR_TEAL
-        self.btn_pump.setStyleSheet(self.get_btn_style(color))
-        self.mqtt.publish("shrimp/pump/command", f"PUMP {state}")
+    def handle_run_toggle(self):
+        if not self.running:
+            # 1. Hardware Check (Re-setup if closed)
+            if IMX500_AVAILABLE and (self.imx500_camera is None or self.imx500_camera.is_closed()):
+                self.setup_camera()
 
-    def reset_all(self):
+            self.running = True
+
+            if self.imx500_worker:
+                self.imx500_worker._stop_requested = False 
+                self.imx500_worker.start()
+            
+            # 2. ENABLE SAVE/RESET (Fixes your non-clickable issue)
+            self.btn_run_toggle.setText("STOP")
+            self.btn_run_toggle.setStyleSheet(self.get_btn_style(COLOR_AQUA))
+            
+            self.btn_save.setEnabled(True)
+            self.btn_reset.setEnabled(True)
+            self.btn_save.setStyleSheet(self.get_btn_style(COLOR_TEAL))
+            self.btn_reset.setStyleSheet(self.get_btn_style(COLOR_TEAL))
+            
+            self.lbl_status.setText("SYSTEM RUNNING")
+        else:
+            self.stop_machine_logic()
+
+    def stop_machine_logic(self):
+        """Stops the stream but keeps hardware ready for next batch."""
         self.running = False
-        if self.imx500_worker and self.imx500_worker.isRunning():
+        if self.imx500_worker:
             self.imx500_worker.request_stop()
-            self.imx500_worker.wait(2000)
-        if self.imx500_camera:
-            self.imx500_camera.reset_count()
-        self.current_count = 0
-        self.threshold_count = 0
-        self.threshold_reached = False
-        self.lbl_count.setText("Count: 0")
-        self.lbl_target.setText("Target: Not Set")
-        self.lbl_status.setText("SYSTEM RESET")
-        self.mqtt.publish("shrimp/servo1/command", "SERVO1_OPEN")
+            self.imx500_worker.wait(500) 
 
-        self.btn_stop.setEnabled(False)
-        self.btn_stop.setStyleSheet(self.get_btn_style(COLOR_NEUTRAL))
-        self.btn_save.setEnabled(False)
-        self.btn_save.setStyleSheet(self.get_btn_style(COLOR_NEUTRAL))
-        self.btn_dispense.setEnabled(False)
-        self.btn_dispense.setStyleSheet(self.get_btn_style(COLOR_NEUTRAL))
-
-    def start(self):
-        """ Normal Start (Detection Enabled) """
-        self.detect_enabled = True # Enable detection
-        self._start_common("RUNNING...")
-
-    def start_serviceoverlay(self):
-        self.detect_enabled = False
-        self._start_common("RUNNING...")
-
-    def _start_common(self, status_text):
-        """Shared logic for starting camera worker."""
-        if self.imx500_camera is None:
-            self.lbl_status.setText("CAMERA UNAVAILABLE")
-            return
-        if self.imx500_worker and self.imx500_worker.isRunning():
-            # Already running; avoid double-starting the worker thread
-            self.lbl_status.setText(status_text)
-            return
-        self.running = True
-        self.prev_time = time.time()
-        self.imx500_worker._stop_requested = False
-        self.imx500_worker.start()
-        self.lbl_status.setText(status_text)
-
-        self.btn_stop.setEnabled(True)
-        self.btn_stop.setStyleSheet(self.get_btn_style(COLOR_TEAL))
-        self.btn_save.setEnabled(True)
-        self.btn_save.setStyleSheet(self.get_btn_style(COLOR_TEAL))
-
-    def stop(self):
-        self.running = False
-        if self.imx500_worker and self.imx500_worker.isRunning():
-            self.imx500_worker.request_stop()
-            self.imx500_worker.wait(2000)
-        self.lbl_status.setText("STOPPED")
-        self.btn_dispense.setEnabled(True)
-        self.btn_dispense.setStyleSheet(self.get_btn_style(COLOR_AQUA))
-
-    def save(self):
-        count = self.current_count
-        b, f, p, fl = compute_feed(count)
-        save_biomass_record(self.user_id, count, b, f)
+        self.btn_run_toggle.setText("START")
+        self.btn_run_toggle.setStyleSheet(self.get_btn_style(COLOR_TEAL))
+        self.lbl_status.setText("SYSTEM STOPPED")
         
-        import json
-        payload = {
-            "userId": self.user_id,
-            "shrimpCount": count,
-            "biomass": round(b, 2),
-            "feed": round(f, 2),
-            "timestamp": datetime.datetime.now().isoformat()
-        }
-        self.mqtt.publish(f"shrimp/updates/{self.user_id}", json.dumps(payload))
-        
-        from database import sync_biomass_records
-        sync_biomass_records(self.user_id)
-        
-        self.lbl_status.setText("DATA SENT TO CLOUD & MOBILE")
-        self.btn_dispense.setEnabled(True)
-        self.btn_dispense.setStyleSheet(self.get_btn_style(COLOR_AQUA))
+        # Visually clear the screen to show it's stopped
+        self.video_label.clear()
+        self.video_label.setStyleSheet(f"background-color: black; border-radius: 15px; border: 2px solid {COLOR_TEAL};")
 
-    def dispense(self):
-        self.mqtt.publish("shrimp/servo3/command", "SERVO3_DISPENSE")
-        self.lbl_status.setText("FEED DISPENSED")
-
-    def go_back(self):
-        # Stop worker and fully release camera resources so model reloads cleanly next time
-        if self.imx500_worker and self.imx500_worker.isRunning():
-            self.imx500_worker.request_stop()
-            self.imx500_worker.wait(3000)
-        if IMX500_AVAILABLE:
-            try:
-                close_imx500_camera()
-            except Exception:
-                pass
-        self.imx500_camera = None
-        self.imx500_worker = None
-        self.mqtt.disconnect()
-        if self.parent:
-            self.parent.show()
-        self.hide()
-
-    def showEvent(self, event):
-        """Reconnect MQTT and recreate camera/worker when page is entered."""
-        super().showEvent(event)
-        if hasattr(self, "mqtt") and self.mqtt and not self.mqtt.connected:
-            self.mqtt.connect()
-        # Recreate camera and worker if they were closed when leaving this page
-        if IMX500_AVAILABLE and (self.imx500_camera is None or self.imx500_camera.is_closed()):
-            try:
-                self.imx500_camera = get_imx500_camera()
-                self.imx500_worker = IMX500Worker(self.imx500_camera)
-                self.imx500_worker.frame_ready.connect(self.on_frame_ready)
-                self.imx500_worker.error.connect(self.on_worker_error)
-                self.lbl_status.setText("SYSTEM READY")
-            except Exception as exc:
-                self.imx500_camera = None
-                self.imx500_worker = None
-                self.lbl_status.setText(f"Camera init failed: {exc}")
+    def force_refresh(self):
+        """Forces a hardware refresh if the screen is black."""
+        if self.running and self.imx500_camera:
+            self.imx500_camera.capture_frame_and_count()
 
     def set_count(self):
         dialog = NumberInputDialog(self)
@@ -354,55 +249,105 @@ class BiomassWindow(QtWidgets.QWidget):
             if num > 0:
                 self.threshold_count = num
                 self.lbl_target.setText(f"Target: {num}")
+                self.btn_set.setStyleSheet(self.get_btn_style(COLOR_AQUA))
+
+    def reset_all(self):
+        """Full restart of the counting logic."""
+        self.stop_machine_logic()
+        
+        # Reset the actual hardware counter in the camera class
+        if self.imx500_camera:
+            self.imx500_camera.reset_count()
+            
+        self.current_count = 0
+        self.threshold_count = 0
+        self.threshold_reached = False
+        
+        # Reset UI Labels
+        self.lbl_count.setText("Count: 0")
+        self.lbl_target.setText("Target: Not Set")
+        self.lbl_bio.setText("Biomass: 0.00g\nFeed: 0.00g")
+        self.lbl_status.setText("SYSTEM RESET")
+        
+        self.btn_set.setStyleSheet(self.get_btn_style(COLOR_TEAL))
+        # Disable Save/Reset until Start is clicked again
+        self.btn_save.setEnabled(False)
+        self.btn_reset.setEnabled(False)
+        self.btn_save.setStyleSheet(self.get_btn_style(COLOR_NEUTRAL))
+        self.btn_reset.setStyleSheet(self.get_btn_style(COLOR_NEUTRAL))
+        
+        self.video_label.clear()
+        self.video_label.setStyleSheet(f"background-color: black; border-radius: 15px; border: 2px solid {COLOR_TEAL};")
+
+    def save(self):
+        from database import sync_biomass_records, save_biomass_record
+        b, f, p = compute_feed(self.current_count)
+        
+        # 1. Save to RPi local.db
+        save_biomass_record(self.user_id, self.current_count, b, f)
+        
+        # 2. Trigger the sync to MongoDB immediately
+        synced_count = sync_biomass_records(self.user_id)
+        
+        if synced_count > 0:
+            self.lbl_status.setText(f"SYNCED {synced_count} RECORD(S) TO CLOUD")
+        else:
+            self.lbl_status.setText("SAVED LOCALLY (CHECK CONNECTION)")
+
+    def toggle_pump(self):
+        self.pump_on = not self.pump_on
+        state = "ON" if self.pump_on else "OFF"
+        self.btn_pump.setText(f"PUMP: {state}")
+        self.btn_pump.setStyleSheet(self.get_btn_style(COLOR_AQUA if self.pump_on else COLOR_TEAL))
+        self.mqtt.publish("shrimp/pump/command", f"PUMP {state}")
+
+    def open_feed_recommendation(self):
+        from ui_feed import FeedRecommendationWindow
+        if self.imx500_worker: self.imx500_worker.request_stop()
+        self.feed_win = FeedRecommendationWindow(self.user_id, self.current_count, parent=self)
+        self.feed_win.showFullScreen(); self.hide()
+
+    def go_back(self):
+        if self.imx500_worker: self.imx500_worker.request_stop()
+        if IMX500_AVAILABLE: close_imx500_camera()
+        self.mqtt.disconnect(); self.parent.showFullScreen(); self.parent.show(); self.hide()
 
     def on_frame_ready(self, frame, count):
-        """Handle frame and count from IMX500 worker."""
         self.current_count = count
-
-        if frame is None:
-            self.video_label.setText("No frame")
-            return
-
-        # Threshold check when detection enabled
-        if self.detect_enabled and not self.threshold_reached:
-            if self.threshold_count > 0 and count >= self.threshold_count:
-                self.mqtt.publish("shrimp/servo1/command", "SERVO1_CLOSE")
-                self.threshold_reached = True
-                self.lbl_status.setText("TARGET REACHED")
-
-        # Update display
         self.lbl_count.setText(f"Count: {count}")
-        b, f, p, fl = compute_feed(count)
-        self.lbl_bio.setText(f"Biomass: {b:.2f}g\nFeed: {f:.2f}g")
+        b, f, portion = compute_feed(count)
+        self.lbl_bio.setText(f"Biomass: {b:.4f}g\nFeed: {f:.4f}g")
 
-        # Overlay "FINAL COUNT" when target reached
-        if self.threshold_reached:
-            cv2.putText(
-                frame, f"FINAL COUNT: {count}", (15, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2
-            )
+        if frame is not None:
+            try:
+                h, w, ch = frame.shape
+                bytes_per_line = ch * w
+                
+                # Keep Format_RGB888 here - the BGR setting in the camera 
+                # handles the correction before the bytes reach this line.
+                qimg = QtGui.QImage(frame.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888)
+                
+                target_size = self.video_label.size()
+                pixmap = QtGui.QPixmap.fromImage(qimg).scaled(
+                    target_size, 
+                    QtCore.Qt.IgnoreAspectRatio, 
+                    QtCore.Qt.SmoothTransformation
+                )
 
-        # Convert to RGB for display (picamera2 may return BGRA)
-        if frame.shape[2] == 4:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
-        else:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                # --- Rounded Mask Logic ---
+                rounded_pixmap = QtGui.QPixmap(target_size)
+                rounded_pixmap.fill(QtCore.Qt.transparent)
+                painter = QtGui.QPainter(rounded_pixmap)
+                painter.setRenderHint(QtGui.QPainter.Antialiasing)
+                path = QtGui.QPainterPath()
+                path.addRoundedRect(QtCore.QRectF(0, 0, target_size.width(), target_size.height()), 15, 15)
+                painter.setClipPath(path)
+                painter.drawPixmap(0, 0, pixmap)
+                painter.end()
 
-        h, w, ch = frame_rgb.shape
-        qimg = QtGui.QImage(frame_rgb.data, w, h, ch * w, QtGui.QImage.Format_RGB888)
-        # Fill entire display area (no black bars); SmoothTransformation for quality
-        pix = QtGui.QPixmap.fromImage(qimg).scaled(
-            640, 420,
-            QtCore.Qt.IgnoreAspectRatio,
-            QtCore.Qt.SmoothTransformation
-        )
-        self.video_label.setPixmap(pix)
+                self.video_label.setPixmap(rounded_pixmap)
+                
+            except Exception as e:
+                print(f"Display Error: {e}")
 
-    def on_worker_error(self, message: str):
-        """Display worker/camera errors in the status label."""
-        self.lbl_status.setText(message)
-
-if __name__ == "__main__":
-    app = QtWidgets.QApplication(sys.argv)
-    win = BiomassWindow(user_id="test_user")
-    sys.exit(app.exec_())
+    def on_worker_error(self, msg): self.lbl_status.setText(msg)

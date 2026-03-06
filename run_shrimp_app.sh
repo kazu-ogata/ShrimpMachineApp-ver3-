@@ -1,26 +1,17 @@
 #!/bin/bash
 
-# Kill any ghost processes
+# 1. Kill any existing camera/app processes to free the hardware
 sudo pkill -9 rpicam-vid
 sudo pkill -9 ffmpeg
+pkill -f app.py
 
-# 1. Enable the virtual camera module
-sudo modprobe -r v4l2loopback
-sudo modprobe v4l2loopback video_nr=10 card_label="ShrimpSenseCam" exclusive_caps=0
-
-# 2. Run the camera command with a more compatible format for OpenCV
-rpicam-vid -t 0 --width 1280 --height 720 --framerate 30 --codec yuv420 --inline -n -o - | \
-ffmpeg -f rawvideo -vcodec rawvideo -pixel_format yuv420p -video_size 1280x720 -framerate 30 -i - \
--f v4l2 -pix_fmt yuyv422 /dev/video10 &
-
-# 3. Wait for stabilization
-sleep 3
-
-# 4. Environment Variables
+# 2. Set Environment for Wayland (RPi5 Default)
 export QT_QPA_PLATFORM=wayland
-cd /home/hiponpd/Documents/GitHub/ShrimpMachineApp
-/home/hiponpd/Documents/GitHub/ShrimpMachineApp/venv/bin/python3 app.py
+export QT_AUTO_SCREEN_SCALE_FACTOR=0
 
-# 5. Cleanup
-pkill -f rpicam-vid
-pkill -f ffmpeg
+# 3. Navigate to the NEW directory
+cd ~/Documents/ShrimpAppIMX/shrimpMachineAppIMX
+
+# 4. Run using the virtual environment
+# (Assuming your venv is still inside this folder)
+./venv/bin/python3 app.py

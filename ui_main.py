@@ -2,7 +2,6 @@ import os
 import sys
 from PyQt5 import QtWidgets, QtCore, QtGui
 from ui_biomass import BiomassWindow
-from theme import *
 
 # Fix scaling for Raspberry Pi 5 Touchscreens
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "0"
@@ -17,37 +16,33 @@ class MainMenu(QtWidgets.QWidget):
         self.user_id = user_id
         self.logout_requested = False
 
-        # Window Configuration
         self.setWindowFlag(QtCore.Qt.FramelessWindowHint)
         self.setFixedSize(1024, 600)
         self.setStyleSheet("background-color: #FAF7F2;")
 
-        # --- FLOATING BACK BUTTON ---
-        # We don't add this to a layout so it doesn't take up space
+        # --- RESTORED FLOATING BACK BUTTON ---
         self.btn_back = QtWidgets.QPushButton(self)
         self.btn_back.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_ArrowLeft))
         self.btn_back.setIconSize(QtCore.QSize(35, 35))
         self.btn_back.setFixedSize(60, 60)
         self.btn_back.setFlat(True)
         self.btn_back.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
-        self.btn_back.move(20, 20) # Manual positioning
+        self.btn_back.move(20, 20) 
         self.btn_back.clicked.connect(self.close_without_logout)
 
-        # Main Layout
         self.main_layout = QtWidgets.QVBoxLayout(self)
         self.main_layout.setContentsMargins(60, 50, 60, 60)
         self.main_layout.setSpacing(0)
 
-        # 1. Middle Section: Welcome Text (Left) and Mascot (Right)
         self.mid_layout = QtWidgets.QHBoxLayout()
         self.mid_layout.setSpacing(40)
        
-        # Welcome Text
         self.lblWelcome = QtWidgets.QLabel()
         from database import get_cached_username
         name = get_cached_username(user_id)
         self.lblWelcome.setText(f"Welcome,\n{name}!")
        
+        # RESTORED ORIGINAL STYLING
         self.lblWelcome.setStyleSheet("""
             font-family: 'Comic Sans MS', 'Brush Script MT', 'Cursive';
             font-size: 100px;
@@ -56,7 +51,6 @@ class MainMenu(QtWidgets.QWidget):
         """)
         self.lblWelcome.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
        
-        # Mascot Image
         self.lblImage = QtWidgets.QLabel()
         img_path = "/home/hiponpd/Documents/GitHub/ShrimpMachineApp/assets/images/landing.png"
         if os.path.exists(img_path):
@@ -68,10 +62,7 @@ class MainMenu(QtWidgets.QWidget):
         self.mid_layout.addWidget(self.lblImage, stretch=1)
         self.main_layout.addLayout(self.mid_layout, stretch=4)
 
-        # 2. Bottom Section: Controls
         self.button_layout = QtWidgets.QHBoxLayout()
-
-        # START Button
         self.btnStart = QtWidgets.QPushButton("START")
         self.btnStart.setFixedSize(280, 80)
         self.btnStart.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
@@ -87,7 +78,7 @@ class MainMenu(QtWidgets.QWidget):
             QPushButton:pressed { background-color: #333333; }
         """)
 
-        # Logout Link
+        # RESTORED LOGOUT LINK STYLING
         self.btnLogout = QtWidgets.QPushButton("logout")
         self.btnLogout.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
         self.btnLogout.setStyleSheet("""
@@ -104,35 +95,23 @@ class MainMenu(QtWidgets.QWidget):
         self.button_layout.addWidget(self.btnStart)
         self.button_layout.addStretch()
         self.button_layout.addWidget(self.btnLogout)
-
         self.main_layout.addLayout(self.button_layout, stretch=1)
 
-        # Connections
         self.btnStart.clicked.connect(self.open_biomass)
         self.btnLogout.clicked.connect(self.logout)
 
     def close_without_logout(self):
-        """Closes the app but keeps the session in local.db."""
         self.logout_requested = False
         self.close()
 
     def open_biomass(self):
-        # Reuse BiomassWindow to avoid "Camera in Configured state" libcamera error.
-        # Creating new IMX500Camera/Picamera2 on each open fails to re-acquire the camera.
         if not hasattr(self, "bw") or self.bw is None:
             self.bw = BiomassWindow(self.user_id, self)
         self.bw.showFullScreen()
         self.hide()
 
     def logout(self):
-        """Standard logout: clears session from local.db"""
         from database import clear_session
         clear_session()
         self.logout_requested = True
         self.close()
-
-if __name__ == "__main__":
-    app = QtWidgets.QApplication(sys.argv)
-    window = MainMenu(user_id="test_user")
-    window.showFullScreen()
-    sys.exit(app.exec_())

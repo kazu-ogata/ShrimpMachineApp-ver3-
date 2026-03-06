@@ -13,32 +13,33 @@ from picamera2 import MappedArray, Picamera2
 from picamera2.devices import IMX500
 from picamera2.devices.imx500 import NetworkIntrinsics, postprocess_nanodet_detection
 
-# Tracking constants - tuned for fast-moving shrimp and detection gaps
-MAX_DISTANCE = 140          # Max pixel movement between frames to match same shrimp
-MAX_DISTANCE_REAPPEAR = 220 # Larger threshold when matching after detection gap
-MAX_DISAPPEARED = 100       # Frames before removing lost tracks
-NEAR_LINE_PX = 100          # New object in count area within this of line = likely crossed during gap
+# Tracking constants - tuned for post-larval scale (small, fast-moving in channel)
+MAX_DISTANCE = 100          # Max pixel movement between frames (80-120 for small objects)
+MAX_DISTANCE_REAPPEAR = 180 # Larger threshold when matching after detection gap (150-220)
+MAX_DISAPPEARED = 80        # Frames before removing lost tracks (60-100 for quicker cleanup)
+NEAR_LINE_PX = 65          # New object in count area within this of line = likely crossed during gap (50-80 at high zoom)
 
 # Area split (Detection Area on left, Count Area on right)
-DETECTION_AREA_RATIO = 0.50  # 50% detection area, 50% count area
+# 70% Detection Area (left), 30% Count Area (right)
+DETECTION_AREA_RATIO = 0.70
 
 # De-duplication of counts near the Count Area line
 RECENT_COUNT_TIME = 1.5     # Seconds within which repeated counts near same spot are treated as duplicates
 RECENT_COUNT_DISTANCE = 80  # Max pixel distance for a duplicate count relative to last crossing
 
-# Exposure / zoom crop: high shutter speed reduces motion blur; AnalogueGain compensates for darkness
+# Exposure / zoom crop: high shutter speed reduces motion blur
 EXPOSURE_TIME_US = 7500     # 7.5ms shutter (5000-10000 for 30fps)
-ANALOGUE_GAIN = 5.0         # Compensate for short exposure (tune for your lighting)
+ANALOGUE_GAIN = 2.0         # Lower with extra light (e.g. 1.0â€“2.0); raise if too dark (e.g. 3.0â€“5.0)
 # Zoom-in crop to remove unused top/bottom areas (x, y, width, height)
 SCALER_CROP = (0, 400, 4056, 2200)
 
 # Default config (custom shrimp detection model)
-DEFAULT_MODEL = "/home/hiponpd/my_custom_model/network.rpk"
-DEFAULT_LABELS = "/home/hiponpd/Downloads/best_imx_model/labels.txt"
+DEFAULT_MODEL = "/home/hiponpd/Documents/ShrimpAppIMX/shrimpMachineAppIMX/models/network.rpk"
+DEFAULT_LABELS = "/home/hiponpd/Documents/ShrimpAppIMX/shrimpMachineAppIMX/label/labels.txt"
 DEFAULT_FPS = 30
-DEFAULT_THRESHOLD = 0.55
+DEFAULT_THRESHOLD = 0.3
 DEFAULT_IOU = 0.65
-DEFAULT_MAX_DETECTIONS = 10
+DEFAULT_MAX_DETECTIONS = 20
 
 
 class Detection:
@@ -257,16 +258,6 @@ class IMX500Camera:
             red = (0, 0, 255, 255) if has_alpha else (0, 0, 255)
             yellow = (0, 255, 255, 255) if has_alpha else (0, 255, 255)
 
-            cv2.line(m.array, (split_x, 0), (split_x, height), blue, 2)
-            cv2.putText(
-                m.array, "Detection Area", (20, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, white, 1
-            )
-            cv2.putText(
-                m.array, "Count Area", (split_x + 20, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, white, 1
-            )
-
             current_centroids = []
             for det in detections:
                 x, y, w, h = det.box
@@ -289,13 +280,17 @@ class IMX500Camera:
                         del self.tracked_objects[obj_id]
             else:
                 if len(self.tracked_objects) == 0:
+                    # First frame with detections: treat any object in the Count Area as a new shrimp.
                     for cx, cy, x, y, w, h in current_centroids:
+                        is_count_area = cx > split_x
                         self.tracked_objects[self.next_object_id] = {
                             "centroid": (cx, cy),
                             "counted": False,
                             "disappeared": 0,
                         }
-                        if cx > split_x:
+                        if is_count_area:
+                            # Count instantly when a new shrimp first appears in the 30% Count Area.
+                            self._register_count(cx, cy)
                             self.tracked_objects[self.next_object_id]["counted"] = True
                         self.next_object_id += 1
                 else:
@@ -329,8 +324,8 @@ class IMX500Camera:
                             and cx > split_x
                             and not self.tracked_objects[obj_id]["counted"]
                         ):
-                            self.total_shrimp_count += 1
-                            self.tracked_objects[obj_id]["counted"] = True
+                            if self._register_count(cx, cy):
+                                self.tracked_objects[obj_id]["counted"] = True
 
                     for obj_id in list(self.tracked_objects.keys()):
                         if obj_id not in used_ids:
@@ -341,23 +336,16 @@ class IMX500Camera:
                     for i, (cx, cy, x, y, w, h) in enumerate(current_centroids):
                         if i not in used_centroids:
                             is_count_area = cx > split_x
-                            near_line = is_count_area and (cx - split_x) < NEAR_LINE_PX
                             self.tracked_objects[self.next_object_id] = {
                                 "centroid": (cx, cy),
                                 "counted": is_count_area,
                                 "disappeared": 0,
                             }
-                            if near_line:
-                                self.total_shrimp_count += 1
-                                self.tracked_objects[self.next_object_id]["counted"] = True
-                            elif is_count_area:
+                            if is_count_area:
+                                # Any new track whose centroid is in the 30% Count Area increments once.
+                                self._register_count(cx, cy)
                                 self.tracked_objects[self.next_object_id]["counted"] = True
                             self.next_object_id += 1
-
-            cv2.putText(
-                m.array, f"Live Count: {self.total_shrimp_count}",
-                (split_x + 20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, yellow, 2
-            )
 
             if getattr(self.intrinsics, "preserve_aspect_ratio", False):
                 b_x, b_y, b_w, b_h = self.imx500.get_roi_scaled(request)
@@ -370,39 +358,41 @@ class IMX500Camera:
                 )
 
     def start(self):
-        """Start camera and inference pipeline."""
-        # Recreate Picamera2 after close() released it (avoids libcamera "Configured state" error).
+        """Start camera and inference pipeline safely with BGR correction."""
         recreated = False
         if self.picam2 is None or self._closed:
             self.picam2 = Picamera2(self.imx500.camera_num)
             self._closed = False
             recreated = True
-            # If we had to re-acquire the camera, allow firmware upload again.
             self._fw_uploaded = False
-        ir = getattr(
-            self.intrinsics,
-            "inference_rate",
-            getattr(self.intrinsics, "fps", 10),
-        )
-        # Force BGR output so OpenCV/UI channel order is correct (avoids "blue skin" tint).
+
+        ir = getattr(self.intrinsics, "inference_rate", getattr(self.intrinsics, "fps", 10))
+        
+        # 1. Configuration - Use BGR888 to fix the blue hand/pencil
         config = self.picam2.create_preview_configuration(
             main={"format": "BGR888"},
             controls={"FrameRate": ir},
             buffer_count=12,
         )
-        # Upload network firmware only when (re)acquiring the camera.
+
+        # 2. Firmware upload
         if recreated and not self._fw_uploaded:
             self.imx500.show_network_fw_progress_bar()
             self._fw_uploaded = True
+
+        # 3. START ONLY ONCE
         self.picam2.start(config, show_preview=False)
-        # ScalerCrop (zoom in) + manual exposure to reduce motion blur; AnalogueGain compensates for darkness
+        
+        # 4. Standard Controls (Removed ColorSpaces)
         self.picam2.set_controls({
             "ScalerCrop": SCALER_CROP,
             "ExposureTime": EXPOSURE_TIME_US,
             "AnalogueGain": ANALOGUE_GAIN,
         })
+
         if getattr(self.intrinsics, "preserve_aspect_ratio", False):
             self.imx500.set_auto_aspect_ratio()
+            
         self.picam2.pre_callback = lambda req, s="main": self._draw_detections(req, s)
         self.last_results = None
 
